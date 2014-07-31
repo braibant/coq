@@ -1305,7 +1305,7 @@ let replay_history tactic_normalisation =
 	  and id2 = hyp_of_tag e2.id in
 	  let eq1 = val_of(decompile e1)
 	  and eq2 = val_of(decompile e2) in
-	  if k1 =? one & e2.kind = EQUA then
+	  if k1 =? one && e2.kind = EQUA then
             let tac_thm =
               match e1.kind with
 		| EQUA -> Lazy.force coq_OMEGA5
@@ -1396,7 +1396,7 @@ let destructure_omega gl tac_def (id,c) =
   else
     try match destructurate_prop c with
       | Kapp(Eq,[typ;t1;t2])
-	when destructurate_type (pf_nf gl typ) = Kapp(Z,[]) ->
+	   when pf_conv_x gl typ (Lazy.force coq_Z) ->
 	  let t = mk_plus t1 (mk_inv t2) in
 	  normalize_equation
 	    id EQUA (Lazy.force coq_Zegal_left) 2 t t1 t2 tac_def
@@ -1660,11 +1660,11 @@ let rec decidability gl t =
     | Kapp(Not,[t1]) ->
         mkApp (Lazy.force coq_dec_not, [| t1; decidability gl t1 |])
     | Kapp(Eq,[typ;t1;t2]) ->
-	begin match destructurate_type (pf_nf gl typ) with
-          | Kapp(Z,[]) ->  mkApp (Lazy.force coq_dec_eq, [| t1;t2 |])
-          | Kapp(Nat,[]) ->  mkApp (Lazy.force coq_dec_eq_nat, [| t1;t2 |])
-          | _ -> raise Undecidable
-	end
+       if pf_conv_x gl typ (Lazy.force coq_Z)
+       then  mkApp (Lazy.force coq_dec_eq, [| t1;t2 |])
+       else if pf_conv_x gl typ (Lazy.force coq_nat)
+       then mkApp (Lazy.force coq_dec_eq_nat, [| t1;t2 |])
+       else raise Undecidable
     | Kapp(op,[t1;t2]) ->
         (try mkApp (Lazy.force (dec_binop op), [| t1; t2 |])
 	 with Not_found -> raise Undecidable)
@@ -1726,39 +1726,40 @@ let destructure_hyps gl =
               else
 		loop lit
           | Kapp(Not,[t]) ->
-              begin match destructurate_prop t with
-		  Kapp(Or,[t1;t2]) ->
-                    tclTHENLIST [
-		      (generalize_tac
+             begin
+               match destructurate_prop t with
+		 Kapp(Or,[t1;t2]) ->
+                 tclTHENLIST [
+		     (generalize_tac
                         [mkApp (Lazy.force coq_not_or,[| t1; t2; mkVar i |])]);
-		      (onClearedName i (fun i ->
-                        (loop ((i,None,mk_and (mk_not t1) (mk_not t2)):: lit))))
-                    ]
-		| Kapp(And,[t1;t2]) ->
-		    let d1 = decidability gl t1 in
-                    tclTHENLIST [
+		     (onClearedName i (fun i ->
+                                       (loop ((i,None,mk_and (mk_not t1) (mk_not t2)):: lit))))
+                   ]
+	       | Kapp(And,[t1;t2]) ->
+		  let d1 = decidability gl t1 in
+                  tclTHENLIST [
 		      (generalize_tac
-		        [mkApp (Lazy.force coq_not_and,
-				[| t1; t2; d1; mkVar i |])]);
+		         [mkApp (Lazy.force coq_not_and,
+				 [| t1; t2; d1; mkVar i |])]);
 		      (onClearedName i (fun i ->
-                        (loop ((i,None,mk_or (mk_not t1) (mk_not t2))::lit))))
+                                        (loop ((i,None,mk_or (mk_not t1) (mk_not t2))::lit))))
                     ]
-		| Kapp(Iff,[t1;t2]) ->
-		    let d1 = decidability gl t1 in
-		    let d2 = decidability gl t2 in
-                    tclTHENLIST [
+	       | Kapp(Iff,[t1;t2]) ->
+		  let d1 = decidability gl t1 in
+		  let d2 = decidability gl t2 in
+                  tclTHENLIST [
 		      (generalize_tac
-		        [mkApp (Lazy.force coq_not_iff,
-				[| t1; t2; d1; d2; mkVar i |])]);
+		         [mkApp (Lazy.force coq_not_iff,
+				 [| t1; t2; d1; d2; mkVar i |])]);
 		      (onClearedName i (fun i ->
-                        (loop ((i,None,
-			        mk_or (mk_and t1 (mk_not t2))
-				      (mk_and (mk_not t1) t2))::lit))))
+                                        (loop ((i,None,
+			                        mk_or (mk_and t1 (mk_not t2))
+				                      (mk_and (mk_not t1) t2))::lit))))
                     ]
-		| Kimp(t1,t2) ->
-		    (* t2 must be in Prop otherwise ~(t1->t2) wouldn't be ok.
+	       | Kimp(t1,t2) ->
+		  (* t2 must be in Prop otherwise ~(t1->t2) wouldn't be ok.
 		       For t1, being decidable implies being Prop. *)
-		    let d1 = decidability gl t1 in
+		  let d1 = decidability gl t1 in
                     tclTHENLIST [
 		      (generalize_tac
 		        [mkApp (Lazy.force coq_not_imp,
@@ -1783,41 +1784,52 @@ let destructure_hyps gl =
                       ]
 		     with Not_found -> loop lit)
 		| Kapp(Eq,[typ;t1;t2]) ->
-                    if !old_style_flag then begin
-		      match destructurate_type (pf_nf gl typ) with
-			| Kapp(Nat,_) ->
-                            tclTHENLIST [
-			      (simplest_elim
-				(mkApp
-                                  (Lazy.force coq_not_eq, [|t1;t2;mkVar i|])));
-			      (onClearedName i (fun _ -> loop lit))
-                            ]
-			| Kapp(Z,_) ->
-                            tclTHENLIST [
-			      (simplest_elim
-				(mkApp
+                   if !old_style_flag then
+                     begin
+                       if pf_conv_x gl typ (Lazy.force coq_Z)
+                       then
+                         begin
+                           tclTHENLIST [
+			       (simplest_elim
+				  (mkApp
 				  (Lazy.force coq_not_Zeq, [|t1;t2;mkVar i|])));
 			      (onClearedName i (fun _ -> loop lit))
                             ]
-			| _ -> loop lit
-                    end else begin
-		      match destructurate_type (pf_nf gl typ) with
-			| Kapp(Nat,_) ->
+                         end
+                       else if pf_conv_x gl typ (Lazy.force coq_nat)
+                       then begin
+                           tclTHENLIST [
+			       (simplest_elim
+			          (mkApp
+                                     (Lazy.force coq_not_eq, [|t1;t2;mkVar i|])));
+			       (onClearedName i (fun _ -> loop lit))
+                             ]
+                         end
+                       else loop lit
+                     end
+                   else
+                     begin
+                       if pf_conv_x gl typ (Lazy.force coq_Z)
+                       then
+                         begin
+                           (tclTHEN
+			      (convert_hyp_no_check
+                                 (i,body,
+				  (mkApp (Lazy.force coq_Zne, [| t1;t2|]))))
+			      (loop lit))
+                         end
+                       else if pf_conv_x gl typ (Lazy.force coq_nat)
+                       then begin
                                (tclTHEN
 			       (convert_hyp_no_check
                                   (i,body,
 				  (mkApp (Lazy.force coq_neq, [| t1;t2|]))))
 			       (loop lit))
-			| Kapp(Z,_) ->
-                               (tclTHEN
-			       (convert_hyp_no_check
-                                  (i,body,
-				  (mkApp (Lazy.force coq_Zne, [| t1;t2|]))))
-			       (loop lit))
-			| _ -> loop lit
-                    end
-		| _ -> loop lit
-              end
+                         end
+                       else loop lit
+                     end
+                | _ -> loop lit
+             end
           | _ -> loop lit
 	with
 	  | Undecidable -> loop lit
